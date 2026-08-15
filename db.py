@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS user_timezone (
     user_id INTEGER PRIMARY KEY,
     timezone TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS access_banners (
+    message_id INTEGER PRIMARY KEY,
+    guild_id INTEGER NOT NULL
+);
 """
 
 
@@ -298,6 +303,24 @@ def get_pending_checkin(message_id):
                WHERE pc.message_id = ?""",
             (message_id,),
         ).fetchone()
+
+
+def set_access_banner(guild_id, message_id):
+    """Records the guild's active access banner, replacing any prior one (only one is active at a time)."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM access_banners WHERE guild_id = ?", (guild_id,))
+        conn.execute(
+            "INSERT INTO access_banners (message_id, guild_id) VALUES (?, ?)",
+            (message_id, guild_id),
+        )
+
+
+def get_access_banner_guild(message_id):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT guild_id FROM access_banners WHERE message_id = ?", (message_id,)
+        ).fetchone()
+        return row["guild_id"] if row else None
 
 
 def get_leaderboard(guild_id, limit=20):

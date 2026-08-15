@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 import db
 from cogs.leaderboard import build_leaderboard_embed
+from cogs.reminders import ACCESS_EMOJI
 
 load_dotenv()
 TOKEN = os.environ["DISCORD_TOKEN"]
@@ -145,10 +146,64 @@ async def scheduler_tick():
     await process_leaderboards()
 
 
+async def resolve_member(guild, user_id):
+    member = guild.get_member(user_id)
+    if member is not None:
+        return member
+    try:
+        return await guild.fetch_member(user_id)
+    except discord.HTTPException:
+        return None
+
+
+async def grant_channel_access(guild_id, user_id):
+    guild = bot.get_guild(guild_id)
+    channel_id = db.get_guild_channel(guild_id) if guild is not None else None
+    channel = bot.get_channel(channel_id) if channel_id is not None else None
+    if guild is None or channel is None:
+        return
+    member = await resolve_member(guild, user_id)
+    if member is None:
+        return
+    try:
+        await channel.set_permissions(
+            member, view_channel=True, send_messages=True, read_message_history=True, add_reactions=True
+        )
+    except discord.HTTPException:
+        log.warning("Failed to grant channel access to user %s in guild %s", user_id, guild_id)
+        return
+    try:
+        await channel.send(f"👋 <@{user_id}> now has access — welcome!")
+    except discord.HTTPException:
+        pass
+
+
+async def revoke_channel_access(guild_id, user_id):
+    guild = bot.get_guild(guild_id)
+    channel_id = db.get_guild_channel(guild_id) if guild is not None else None
+    channel = bot.get_channel(channel_id) if channel_id is not None else None
+    if guild is None or channel is None:
+        return
+    member = await resolve_member(guild, user_id)
+    if member is None:
+        return
+    try:
+        await channel.set_permissions(member, overwrite=None)
+    except discord.HTTPException:
+        log.warning("Failed to revoke channel access for user %s in guild %s", user_id, guild_id)
+
+
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == bot.user.id:
         return
+
+    if str(payload.emoji) == ACCESS_EMOJI:
+        guild_id = db.get_access_banner_guild(payload.message_id)
+        if guild_id is not None and guild_id == payload.guild_id:
+            await grant_channel_access(guild_id, payload.user_id)
+        return
+
     if str(payload.emoji) != CHECK_EMOJI:
         return
 
@@ -165,6 +220,18 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         await channel.send(
             f"✅ <@{payload.user_id}> checked in on **{pending['label']}**! Streak: **{new_streak}** 🔥"
         )
+
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    if payload.user_id == bot.user.id:
+        return
+    if str(payload.emoji) != ACCESS_EMOJI:
+        return
+
+    guild_id = db.get_access_banner_guild(payload.message_id)
+    if guild_id is not None and guild_id == payload.guild_id:
+        await revoke_channel_access(guild_id, payload.user_id)
 
 
 @bot.event

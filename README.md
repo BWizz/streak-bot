@@ -5,7 +5,7 @@ Personal accountability reminders with streaks and a leaderboard.
 ## Setup
 
 1. Create a bot at https://discord.com/developers/applications, add a bot user, and copy its token.
-2. Invite it to your server with the `bot` and `applications.commands` scopes, and the "Send Messages", "Add Reactions", "Embed Links", and "Read Message History" permissions.
+2. Invite it to your server with the `bot` and `applications.commands` scopes, and the "Send Messages", "Add Reactions", "Embed Links", "Read Message History", and "Manage Roles" permissions.
 3. `cp .env.example .env` and paste the token in as `DISCORD_TOKEN`.
 4. `python3.11 -m venv venv && ./venv/bin/pip install -r requirements.txt`
 5. `./venv/bin/python bot.py`
@@ -13,6 +13,7 @@ Personal accountability reminders with streaks and a leaderboard.
 ## Using it
 
 - An admin runs `/setup channel #accountability` once, to pick where reminders and check-ins get posted.
+- If that channel is private, an admin can run `/setup access #general` to post a banner there — reacting 🔓 to it gives that person access to the reminders channel, and removing the reaction takes it away again. Rerunning the command moves the banner and retires the old one.
 - Each person runs `/remind set label:walk activity:"walk 10k steps" start:09:00 end:10:00 timezone:ET` to sign up. `label` is a short name for this specific reminder — you can sign up for as many as you want (e.g. a second one with `label:sober`), each with its own independent streak. Reusing a label updates that reminder instead of creating a duplicate. `timezone` is optional and defaults to Eastern if you never set one; after the first time the bot remembers your default and reuses it for any `/remind set` call that omits it. `start` and `end` must fall on the same day (overnight windows aren't supported).
 - At `start`, the bot posts a reminder tagging them and naming the label. Reacting ✅ (on that message or the nudge below) logs the check-in and bumps that reminder's streak.
 - If they haven't checked in by 30 minutes before `end`, the bot posts a nudge with the time remaining.

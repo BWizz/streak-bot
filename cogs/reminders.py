@@ -8,6 +8,7 @@ import db
 
 TIME_FORMAT_HELP = "Use 24-hour HH:MM, e.g. 09:00 or 19:30."
 DEFAULT_TIMEZONE = "America/New_York"
+ACCESS_EMOJI = "🔓"
 
 # Common abbreviations map to a real IANA zone so daylight saving is handled automatically
 # (a bare "EST" would otherwise be wrong for half the year).
@@ -65,6 +66,41 @@ class Reminders(commands.Cog):
         db.set_guild_channel(interaction.guild_id, channel.id)
         await interaction.response.send_message(
             f"Reminders and check-ins will now be posted in {channel.mention}.", ephemeral=True
+        )
+
+    @setup_group.command(name="access", description="Post a banner that grants access to the reminders channel on reaction")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        channel="Channel to post the access banner in",
+        message="Optional custom banner text (defaults to a message naming the reminders channel)",
+    )
+    async def setup_access(self, interaction: discord.Interaction, channel: discord.TextChannel, message: str = None):
+        reminder_channel_id = db.get_guild_channel(interaction.guild_id)
+        if reminder_channel_id is None:
+            await interaction.response.send_message(
+                "Run /setup channel first so I know which channel to grant access to.", ephemeral=True
+            )
+            return
+
+        reminder_channel = interaction.guild.get_channel(reminder_channel_id)
+        banner_text = message or (
+            f"React {ACCESS_EMOJI} below to get access to {reminder_channel.mention}. "
+            f"Remove your reaction to leave it."
+        )
+        try:
+            sent = await channel.send(banner_text)
+            await sent.add_reaction(ACCESS_EMOJI)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"I don't have permission to post and react in {channel.mention}. "
+                "Check that I have View Channel, Send Messages, and Add Reactions there.",
+                ephemeral=True,
+            )
+            return
+        db.set_access_banner(interaction.guild_id, sent.id)
+        await interaction.response.send_message(
+            f"Access banner posted in {channel.mention}. Any previous banner has stopped working.",
+            ephemeral=True,
         )
 
     @setup_leaderboard_group.command(name="time", description="Turn on the daily leaderboard post and set when it fires")
