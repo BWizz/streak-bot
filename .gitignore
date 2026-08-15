@@ -1,0 +1,5 @@
+.env
+streakbot.db
+__pycache__/
+*.pyc
+venv/
