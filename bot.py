@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
 import discord
@@ -25,6 +25,7 @@ scheduler = AsyncIOScheduler()
 
 
 NUDGE_MINUTES_BEFORE_END = 30
+INACTIVITY_LIMIT = timedelta(days=3)
 
 
 async def process_reminders():
@@ -141,9 +142,20 @@ async def process_leaderboards():
             pass
 
 
+async def process_channel_membership():
+    now_utc = datetime.now(dt_timezone.utc)
+    for membership in db.get_all_channel_memberships():
+        if membership["zero_reminders_since"] is None:
+            continue
+        since = datetime.fromisoformat(membership["zero_reminders_since"])
+        if now_utc - since >= INACTIVITY_LIMIT:
+            await revoke_channel_access(membership["guild_id"], membership["user_id"])
+
+
 async def scheduler_tick():
     await process_reminders()
     await process_leaderboards()
+    await process_channel_membership()
 
 
 async def resolve_member(guild, user_id):
@@ -172,6 +184,7 @@ async def grant_channel_access(guild_id, user_id):
     except discord.HTTPException:
         log.warning("Failed to grant channel access to user %s in guild %s", user_id, guild_id)
         return
+    db.record_channel_membership(guild_id, user_id, datetime.now(dt_timezone.utc).isoformat())
     try:
         await channel.send(f"👋 <@{user_id}> now has access — welcome!")
     except discord.HTTPException:
@@ -191,6 +204,8 @@ async def revoke_channel_access(guild_id, user_id):
         await channel.set_permissions(member, overwrite=None)
     except discord.HTTPException:
         log.warning("Failed to revoke channel access for user %s in guild %s", user_id, guild_id)
+        return
+    db.clear_channel_membership(guild_id, user_id)
 
 
 @bot.event
@@ -234,12 +249,36 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
         await revoke_channel_access(guild_id, payload.user_id)
 
 
+async def sync_channel_membership():
+    """Back-fills tracking for anyone who already has channel access from before this feature
+    existed, so the inactivity sweep applies to them too instead of only future joiners."""
+    now_iso = datetime.now(dt_timezone.utc).isoformat()
+    for guild in bot.guilds:
+        channel_id = db.get_guild_channel(guild.id)
+        if channel_id is None:
+            continue
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            continue
+        try:
+            overwrites = channel.overwrites
+        except discord.HTTPException:
+            log.warning("Failed to read channel overwrites for guild %s", guild.id)
+            continue
+        for target, _ in overwrites.items():
+            if not isinstance(target, discord.Member):
+                continue
+            if not db.has_channel_membership(guild.id, target.id):
+                db.record_channel_membership(guild.id, target.id, now_iso)
+
+
 @bot.event
 async def on_ready():
     log.info("Logged in as %s", bot.user)
     if not scheduler.running:
         scheduler.add_job(scheduler_tick, "interval", seconds=60)
         scheduler.start()
+    await sync_channel_membership()
     try:
         # Guild-scoped sync is instant (global sync can take up to an hour to reach clients).
         for guild in bot.guilds:

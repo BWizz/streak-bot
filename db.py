@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone as dt_timezone
 
 DB_PATH = "streakbot.db"
 
@@ -52,6 +53,13 @@ CREATE TABLE IF NOT EXISTS user_timezone (
 CREATE TABLE IF NOT EXISTS access_banners (
     message_id INTEGER PRIMARY KEY,
     guild_id INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS channel_membership (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    zero_reminders_since TEXT,
+    PRIMARY KEY (guild_id, user_id)
 );
 """
 
@@ -179,6 +187,10 @@ def upsert_reminder(user_id, guild_id, label, activity, start_hour, start_minute
                 "INSERT INTO streaks (reminder_id, current_streak, longest_streak, last_checkin_date) VALUES (?, 0, 0, NULL)",
                 (reminder_id,),
             )
+        conn.execute(
+            "UPDATE channel_membership SET zero_reminders_since = NULL WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
         return reminder_id
 
 
@@ -195,6 +207,16 @@ def delete_reminder(user_id, guild_id, label):
         conn.execute("DELETE FROM pending_checkins WHERE reminder_id = ?", (reminder_id,))
         conn.execute("DELETE FROM streaks WHERE reminder_id = ?", (reminder_id,))
         conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS c FROM reminders WHERE user_id = ? AND guild_id = ?", (user_id, guild_id)
+        ).fetchone()["c"]
+        if remaining == 0:
+            conn.execute(
+                """UPDATE channel_membership SET zero_reminders_since = ?
+                   WHERE guild_id = ? AND user_id = ? AND zero_reminders_since IS NULL""",
+                (datetime.now(dt_timezone.utc).isoformat(), guild_id, user_id),
+            )
         return True
 
 
@@ -321,6 +343,42 @@ def get_access_banner_guild(message_id):
             "SELECT guild_id FROM access_banners WHERE message_id = ?", (message_id,)
         ).fetchone()
         return row["guild_id"] if row else None
+
+
+def record_channel_membership(guild_id, user_id, now_iso):
+    """Marks a user as having channel access, starting (or resetting) their inactivity clock
+    based on whether they currently have any reminders in this guild. Call on every grant,
+    including re-grants after a rejoin."""
+    with get_conn() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM reminders WHERE user_id = ? AND guild_id = ?", (user_id, guild_id)
+        ).fetchone()["c"]
+        zero_since = now_iso if count == 0 else None
+        conn.execute(
+            """INSERT INTO channel_membership (guild_id, user_id, zero_reminders_since) VALUES (?, ?, ?)
+               ON CONFLICT(guild_id, user_id) DO UPDATE SET zero_reminders_since = excluded.zero_reminders_since""",
+            (guild_id, user_id, zero_since),
+        )
+
+
+def clear_channel_membership(guild_id, user_id):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM channel_membership WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        )
+
+
+def get_all_channel_memberships():
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM channel_membership").fetchall()
+
+
+def has_channel_membership(guild_id, user_id):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM channel_membership WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        ).fetchone()
+        return row is not None
 
 
 def get_leaderboard(guild_id, limit=20):
