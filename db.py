@@ -4,6 +4,8 @@ from datetime import datetime, timezone as dt_timezone
 
 DB_PATH = "streakbot.db"
 
+ALL_DAYS_MASK = 0b1111111  # bit i = weekday i (Monday=0 ... Sunday=6, matching datetime.weekday())
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS guild_config (
     guild_id INTEGER PRIMARY KEY,
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     last_start_date TEXT,
     last_nudge_date TEXT,
     last_result_date TEXT,
+    days_mask INTEGER NOT NULL DEFAULT 127,
     UNIQUE (user_id, guild_id, label)
 );
 
@@ -76,25 +79,31 @@ def get_conn():
         conn.close()
 
 
-# Columns added to guild_config after its initial release. CREATE TABLE IF NOT EXISTS only
-# creates missing tables, not missing columns on ones that already exist, so an older db file
-# needs these patched in by hand.
-GUILD_CONFIG_MIGRATIONS = [
-    ("leaderboard_enabled", "ALTER TABLE guild_config ADD COLUMN leaderboard_enabled INTEGER NOT NULL DEFAULT 0"),
-    ("leaderboard_hour", "ALTER TABLE guild_config ADD COLUMN leaderboard_hour INTEGER"),
-    ("leaderboard_minute", "ALTER TABLE guild_config ADD COLUMN leaderboard_minute INTEGER"),
-    ("leaderboard_timezone", "ALTER TABLE guild_config ADD COLUMN leaderboard_timezone TEXT"),
-    ("leaderboard_last_posted_date", "ALTER TABLE guild_config ADD COLUMN leaderboard_last_posted_date TEXT"),
-]
+# Columns added to existing tables after their initial release, keyed by table name.
+# CREATE TABLE IF NOT EXISTS only creates missing tables, not missing columns on ones that
+# already exist, so an older db file needs these patched in by hand.
+COLUMN_MIGRATIONS = {
+    "guild_config": [
+        ("leaderboard_enabled", "ALTER TABLE guild_config ADD COLUMN leaderboard_enabled INTEGER NOT NULL DEFAULT 0"),
+        ("leaderboard_hour", "ALTER TABLE guild_config ADD COLUMN leaderboard_hour INTEGER"),
+        ("leaderboard_minute", "ALTER TABLE guild_config ADD COLUMN leaderboard_minute INTEGER"),
+        ("leaderboard_timezone", "ALTER TABLE guild_config ADD COLUMN leaderboard_timezone TEXT"),
+        ("leaderboard_last_posted_date", "ALTER TABLE guild_config ADD COLUMN leaderboard_last_posted_date TEXT"),
+    ],
+    "reminders": [
+        ("days_mask", f"ALTER TABLE reminders ADD COLUMN days_mask INTEGER NOT NULL DEFAULT {ALL_DAYS_MASK}"),
+    ],
+}
 
 
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
-        existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(guild_config)")}
-        for column, ddl in GUILD_CONFIG_MIGRATIONS:
-            if column not in existing_columns:
-                conn.execute(ddl)
+        for table, migrations in COLUMN_MIGRATIONS.items():
+            existing_columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for column, ddl in migrations:
+                if column not in existing_columns:
+                    conn.execute(ddl)
 
 
 def set_guild_channel(guild_id, channel_id):
@@ -159,9 +168,13 @@ def set_user_timezone(user_id, timezone):
         )
 
 
-def upsert_reminder(user_id, guild_id, label, activity, start_hour, start_minute, end_hour, end_minute, timezone):
+def upsert_reminder(
+    user_id, guild_id, label, activity, start_hour, start_minute, end_hour, end_minute, timezone, days_mask=None
+):
     """Creates a new reminder, or updates the existing one with the same label.
-    Updating preserves in-progress window/streak state; only a brand new reminder starts blank."""
+    Updating preserves in-progress window/streak state; only a brand new reminder starts blank.
+    days_mask of None means "don't touch it" on update (keep whatever was set before), and
+    "every day" on insert (a brand new reminder)."""
     with get_conn() as conn:
         existing = conn.execute(
             "SELECT id FROM reminders WHERE user_id = ? AND guild_id = ? AND label = ?",
@@ -174,13 +187,18 @@ def upsert_reminder(user_id, guild_id, label, activity, start_hour, start_minute
                    end_hour = ?, end_minute = ?, timezone = ? WHERE id = ?""",
                 (activity, start_hour, start_minute, end_hour, end_minute, timezone, reminder_id),
             )
+            if days_mask is not None:
+                conn.execute("UPDATE reminders SET days_mask = ? WHERE id = ?", (days_mask, reminder_id))
         else:
             cur = conn.execute(
                 """INSERT INTO reminders
                    (user_id, guild_id, label, activity, start_hour, start_minute, end_hour, end_minute,
-                    timezone, last_start_date, last_nudge_date, last_result_date)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)""",
-                (user_id, guild_id, label, activity, start_hour, start_minute, end_hour, end_minute, timezone),
+                    timezone, last_start_date, last_nudge_date, last_result_date, days_mask)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)""",
+                (
+                    user_id, guild_id, label, activity, start_hour, start_minute, end_hour, end_minute, timezone,
+                    days_mask if days_mask is not None else ALL_DAYS_MASK,
+                ),
             )
             reminder_id = cur.lastrowid
             conn.execute(
@@ -192,6 +210,16 @@ def upsert_reminder(user_id, guild_id, label, activity, start_hour, start_minute
             (guild_id, user_id),
         )
         return reminder_id
+
+
+def set_reminder_days(user_id, guild_id, label, days_mask):
+    """Updates just the days_mask of an existing reminder. Returns True if it existed."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE reminders SET days_mask = ? WHERE user_id = ? AND guild_id = ? AND label = ?",
+            (days_mask, user_id, guild_id, label),
+        )
+        return cur.rowcount > 0
 
 
 def delete_reminder(user_id, guild_id, label):

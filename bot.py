@@ -42,6 +42,7 @@ async def process_reminders():
         start_minute_of_day = reminder["start_hour"] * 60 + reminder["start_minute"]
         end_minute_of_day = reminder["end_hour"] * 60 + reminder["end_minute"]
         nudge_minute_of_day = max(start_minute_of_day, end_minute_of_day - NUDGE_MINUTES_BEFORE_END)
+        is_scheduled_today = bool(reminder["days_mask"] & (1 << local_now.weekday()))
 
         channel_id = db.get_guild_channel(reminder["guild_id"])
         channel = bot.get_channel(channel_id) if channel_id is not None else None
@@ -65,7 +66,11 @@ async def process_reminders():
         if channel is None:
             continue
 
-        if now_minute_of_day == start_minute_of_day and reminder["last_start_date"] != today_str:
+        if (
+            now_minute_of_day == start_minute_of_day
+            and reminder["last_start_date"] != today_str
+            and is_scheduled_today
+        ):
             db.mark_reminder_started(reminder["id"], today_str)
             message = await channel.send(
                 f"⏰ <@{reminder['user_id']}> time to **{reminder['activity']}** ({reminder['label']})! "

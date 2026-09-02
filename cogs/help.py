@@ -37,7 +37,9 @@ class Help(commands.Cog):
                 "you have until `end` to react ✅ or the streak resets. A nudge goes out 30 min before `end` "
                 "if you haven't checked in yet.\n"
                 "`timezone` — optional, e.g. `ET`, `MT`, `America/Chicago`. Defaults to Eastern, and is "
-                "remembered after the first time you set it."
+                "remembered after the first time you set it.\n"
+                "`days` — optional, e.g. `daily` (default), `weekdays`, `weekends`, or `Mon,Wed,Fri`. "
+                "Skipped days don't post a reminder and don't touch your streak either way."
             ),
             inline=False,
         )
@@ -47,6 +49,7 @@ class Help(commands.Cog):
                 "`/remind status` — list all your reminders and streaks.\n"
                 "`/remind stop label:<name>` — permanently delete one reminder, streak included.\n"
                 "`/remind timezone` — update your saved default timezone.\n"
+                "`/remind days label:<name> days:<...>` — change which days one reminder triggers on.\n"
                 "`/leaderboard` — see everyone's current and best streaks (no pings).\n"
                 "`/setup leaderboard time` *(admin)* — post the leaderboard automatically once a day.\n"
                 "`/setup leaderboard off` *(admin)* — turn that automatic post back off."
