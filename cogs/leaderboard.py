@@ -52,15 +52,16 @@ class Leaderboard(commands.Cog):
 
     @app_commands.command(name="leaderboard", description="Show the streak leaderboard for this server")
     async def leaderboard(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
         rows = db.get_leaderboard(interaction.guild_id)
         if not rows:
-            await interaction.response.send_message("No one has an active streak yet. Be the first with /remind set!")
+            await interaction.followup.send("No one has an active streak yet. Be the first with /remind set!")
             return
 
         embed = await build_leaderboard_embed(interaction.guild, rows)
-        await interaction.response.send_message(embed=embed)
+        sent = await interaction.followup.send(embed=embed, wait=True)
         try:
-            sent = await interaction.original_response()
             await sent.add_reaction("🎉")
             await sent.add_reaction("👏")
         except discord.HTTPException:

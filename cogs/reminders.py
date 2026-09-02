@@ -25,6 +25,17 @@ TIMEZONE_ALIASES = {
 
 TIMEZONE_HELP = "Common abbreviation (ET, CT, MT, PT, ...) or IANA name (e.g. America/New_York). Defaults to Eastern."
 
+# Index = Python's datetime.weekday() (Monday=0 ... Sunday=6), matching db.ALL_DAYS_MASK's bit order.
+DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+DAY_ALIASES = {name.upper(): i for i, name in enumerate(DAY_NAMES)}
+WEEKDAYS_MASK = sum(1 << i for i in range(5))
+WEEKEND_MASK = (1 << 5) | (1 << 6)
+
+DAYS_HELP = (
+    "Which days to trigger on: 'daily' (default), 'weekdays', 'weekends', "
+    "or a list like 'Mon,Wed,Fri'."
+)
+
 
 def resolve_timezone(raw):
     """Returns the IANA zone name for an abbreviation or IANA name, or None if unrecognized."""
@@ -35,6 +46,37 @@ def resolve_timezone(raw):
     if raw in available_timezones():
         return raw
     return None
+
+
+def parse_days(raw):
+    """Returns a days_mask for a shortcut ('daily', 'weekdays', 'weekends') or a comma/space
+    separated list of day abbreviations (e.g. 'Mon,Wed,Fri'), or None if unrecognized/empty."""
+    normalized = raw.strip().lower()
+    if normalized in ("daily", "everyday", "every day", "all"):
+        return db.ALL_DAYS_MASK
+    if normalized in ("weekday", "weekdays"):
+        return WEEKDAYS_MASK
+    if normalized in ("weekend", "weekends"):
+        return WEEKEND_MASK
+
+    tokens = [tok for tok in normalized.replace(",", " ").split() if tok]
+    if not tokens:
+        return None
+    mask = 0
+    for tok in tokens:
+        day_index = DAY_ALIASES.get(tok[:3].upper())
+        if day_index is None:
+            return None
+        mask |= 1 << day_index
+    return mask
+
+
+def format_days(days_mask):
+    """Human-readable form of a days_mask for display, e.g. in /remind status."""
+    if days_mask == db.ALL_DAYS_MASK:
+        return "daily"
+    selected = [DAY_NAMES[i] for i in range(7) if days_mask & (1 << i)]
+    return ", ".join(selected) if selected else "none"
 
 
 def parse_time(time_str):
@@ -169,13 +211,14 @@ class Reminders(commands.Cog):
             choices.append(app_commands.Choice(name=f"{alias} ({zone})", value=alias))
         return choices[:25]
 
-    @remind_group.command(name="set", description="Sign up for (or update) a daily reminder")
+    @remind_group.command(name="set", description="Sign up for (or update) a reminder")
     @app_commands.describe(
         label="Short name for this reminder, e.g. 'walk'. Reusing an existing label updates that reminder.",
         activity="What you want to be reminded to do, e.g. 'walk 10k steps'",
         start=f"When the reminder first posts, in your own timezone. {TIME_FORMAT_HELP}",
         end=f"Deadline to react ✅ by, same day as start. {TIME_FORMAT_HELP} You'll get a nudge 30 min before this.",
         timezone=f"{TIMEZONE_HELP} Only needed the first time — I'll remember it after that.",
+        days=f"{DAYS_HELP} Only needed the first time (or to change it) — otherwise it's left as-is.",
     )
     @app_commands.autocomplete(label=label_autocomplete, timezone=timezone_autocomplete)
     async def remind_set(
@@ -186,6 +229,7 @@ class Reminders(commands.Cog):
         start: str,
         end: str,
         timezone: str = None,
+        days: str = None,
     ):
         if db.get_guild_channel(interaction.guild_id) is None:
             await interaction.response.send_message(
@@ -225,12 +269,23 @@ class Reminders(commands.Cog):
             timezone = resolved
             db.set_user_timezone(interaction.user.id, timezone)
 
+        days_mask = None
+        if days is not None:
+            days_mask = parse_days(days)
+            if days_mask is None:
+                await interaction.response.send_message(
+                    f"Couldn't parse '{days}'. {DAYS_HELP}", ephemeral=True
+                )
+                return
+
         db.upsert_reminder(
             interaction.user.id, interaction.guild_id, label, activity,
-            start_hour, start_minute, end_hour, end_minute, timezone,
+            start_hour, start_minute, end_hour, end_minute, timezone, days_mask,
         )
+        reminder = db.get_reminder(interaction.user.id, interaction.guild_id, label)
         await interaction.response.send_message(
-            f"Got it — **{label}**: I'll remind you to **{activity}** starting at **{start} {timezone}**, "
+            f"Got it — **{label}**: I'll remind you to **{activity}** starting at **{start} {timezone}** "
+            f"({format_days(reminder['days_mask'])}), "
             f"and your streak resets if you haven't reacted ✅ by **{end} {timezone}**.",
             ephemeral=True,
         )
@@ -253,6 +308,28 @@ class Reminders(commands.Cog):
             f"Default timezone saved as **{timezone}**. This is used whenever `/remind set` doesn't include one — "
             "existing reminders keep their own timezone unless you re-run /remind set for them.",
             ephemeral=True,
+        )
+
+    @remind_group.command(name="days", description="Change which days one of your reminders triggers on")
+    @app_commands.describe(label="Which reminder to update", days=DAYS_HELP)
+    @app_commands.autocomplete(label=label_autocomplete)
+    async def remind_days(self, interaction: discord.Interaction, label: str, days: str):
+        days_mask = parse_days(days)
+        if days_mask is None:
+            await interaction.response.send_message(
+                f"Couldn't parse '{days}'. {DAYS_HELP}", ephemeral=True
+            )
+            return
+
+        found = db.set_reminder_days(interaction.user.id, interaction.guild_id, label, days_mask)
+        if not found:
+            await interaction.response.send_message(
+                f"You don't have a reminder called '{label}'. Check /remind status for your list.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"**{label}** will now trigger: **{format_days(days_mask)}**.", ephemeral=True
         )
 
     @remind_group.command(name="stop", description="Permanently delete one of your daily reminders")
@@ -284,7 +361,8 @@ class Reminders(commands.Cog):
         for r in reminders:
             lines.append(
                 f"**{r['label']}** — {r['activity']} — "
-                f"{r['start_hour']:02d}:{r['start_minute']:02d} to {r['end_hour']:02d}:{r['end_minute']:02d} {r['timezone']}\n"
+                f"{r['start_hour']:02d}:{r['start_minute']:02d} to {r['end_hour']:02d}:{r['end_minute']:02d} {r['timezone']} "
+                f"— {format_days(r['days_mask'])}\n"
                 f"  Current streak: **{r['current_streak']}** 🔥  |  Longest: **{r['longest_streak']}**"
             )
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
