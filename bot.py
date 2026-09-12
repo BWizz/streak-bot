@@ -28,6 +28,47 @@ NUDGE_MINUTES_BEFORE_END = 30
 INACTIVITY_LIMIT = timedelta(days=3)
 
 
+async def user_already_reacted(channel, message_id, user_id):
+    """Reactions persist on Discord even while the bot is offline — gateway events like
+    on_raw_reaction_add simply never get delivered for that gap. So before treating a window
+    as missed, check the message itself rather than trusting only what we saw live."""
+    try:
+        message = await channel.fetch_message(message_id)
+    except discord.HTTPException:
+        return False
+    for reaction in message.reactions:
+        if str(reaction.emoji) != CHECK_EMOJI:
+            continue
+        async for user in reaction.users():
+            if user.id == user_id:
+                return True
+    return False
+
+
+async def resolve_or_reset(reminder, channel, date_str):
+    """Closes out a reminder window for date_str: honors a check-in that came in while the
+    bot was down, and never resets a streak for a window whose check-in prompt was never
+    sent in the first place (nothing for the user to have reacted to)."""
+    streak = db.get_streak(reminder["id"])
+    if streak is not None and streak["last_checkin_date"] == date_str:
+        return
+
+    pending = db.get_pending_checkin_for_reminder_date(reminder["id"], date_str)
+    if pending is None:
+        return
+
+    if channel is not None and await user_already_reacted(channel, pending["message_id"], reminder["user_id"]):
+        db.record_checkin(reminder["id"], date_str)
+        return
+
+    db.reset_streak(reminder["id"])
+    if channel is not None:
+        await channel.send(
+            f"💔 <@{reminder['user_id']}> missed the window for **{reminder['activity']}** "
+            f"({reminder['label']}) — streak reset."
+        )
+
+
 async def process_reminders():
     now_utc = datetime.now(dt_timezone.utc)
     for reminder in db.get_all_reminders():
@@ -53,14 +94,7 @@ async def process_reminders():
             and reminder["last_start_date"] != today_str
             and reminder["last_start_date"] != reminder["last_result_date"]
         ):
-            streak = db.get_streak(reminder["id"])
-            if streak is None or streak["last_checkin_date"] != reminder["last_start_date"]:
-                db.reset_streak(reminder["id"])
-                if channel is not None:
-                    await channel.send(
-                        f"💔 <@{reminder['user_id']}> missed the window for **{reminder['activity']}** "
-                        f"({reminder['label']}) — streak reset."
-                    )
+            await resolve_or_reset(reminder, channel, reminder["last_start_date"])
             db.mark_reminder_resolved(reminder["id"], reminder["last_start_date"])
 
         if channel is None:
@@ -103,14 +137,8 @@ async def process_reminders():
             and reminder["last_start_date"] == today_str
             and reminder["last_result_date"] != today_str
         ):
-            streak = db.get_streak(reminder["id"])
+            await resolve_or_reset(reminder, channel, today_str)
             db.mark_reminder_resolved(reminder["id"], today_str)
-            if streak is None or streak["last_checkin_date"] != today_str:
-                db.reset_streak(reminder["id"])
-                await channel.send(
-                    f"💔 <@{reminder['user_id']}> missed the window for **{reminder['activity']}** "
-                    f"({reminder['label']}) — streak reset."
-                )
 
 
 async def process_leaderboards():

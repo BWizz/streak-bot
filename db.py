@@ -355,6 +355,14 @@ def get_pending_checkin(message_id):
         ).fetchone()
 
 
+def get_pending_checkin_for_reminder_date(reminder_id, date_str):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT message_id, reminder_id, date FROM pending_checkins WHERE reminder_id = ? AND date = ?",
+            (reminder_id, date_str),
+        ).fetchone()
+
+
 def set_access_banner(guild_id, message_id):
     """Records the guild's active access banner, replacing any prior one (only one is active at a time)."""
     with get_conn() as conn:
