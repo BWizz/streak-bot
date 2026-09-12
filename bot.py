@@ -100,8 +100,10 @@ async def process_reminders():
         if channel is None:
             continue
 
+        # Catches both the exact start minute and a late start (e.g. bot was down at
+        # start_minute_of_day) — as long as the window hasn't already expired today.
         if (
-            now_minute_of_day == start_minute_of_day
+            start_minute_of_day <= now_minute_of_day < end_minute_of_day
             and reminder["last_start_date"] != today_str
             and is_scheduled_today
         ):

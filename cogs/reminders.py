@@ -33,7 +33,7 @@ WEEKEND_MASK = (1 << 5) | (1 << 6)
 
 DAYS_HELP = (
     "Which days to trigger on: 'daily' (default), 'weekdays', 'weekends', "
-    "or a list like 'Mon,Wed,Fri'."
+    "a list like 'Mon,Wed,Fri', or a range like 'Mon-Thu' (wraps, so 'Sun-Thu' works too)."
 )
 
 
@@ -48,9 +48,23 @@ def resolve_timezone(raw):
     return None
 
 
+def day_range_mask(start_idx, end_idx):
+    """Inclusive mask from start_idx to end_idx, walking forward and wrapping past Sunday
+    so a range like Sun-Thu (6 -> 3) covers Sun,Mon,Tue,Wed,Thu rather than coming up empty."""
+    mask = 0
+    i = start_idx
+    while True:
+        mask |= 1 << i
+        if i == end_idx:
+            break
+        i = (i + 1) % 7
+    return mask
+
+
 def parse_days(raw):
-    """Returns a days_mask for a shortcut ('daily', 'weekdays', 'weekends') or a comma/space
-    separated list of day abbreviations (e.g. 'Mon,Wed,Fri'), or None if unrecognized/empty."""
+    """Returns a days_mask for a shortcut ('daily', 'weekdays', 'weekends'), a comma/space
+    separated list of day abbreviations (e.g. 'Mon,Wed,Fri'), or a dash range (e.g. 'Mon-Thu',
+    'Sun-Thu'), or None if unrecognized/empty."""
     normalized = raw.strip().lower()
     if normalized in ("daily", "everyday", "every day", "all"):
         return db.ALL_DAYS_MASK
@@ -64,6 +78,14 @@ def parse_days(raw):
         return None
     mask = 0
     for tok in tokens:
+        if "-" in tok:
+            start_tok, _, end_tok = tok.partition("-")
+            start_idx = DAY_ALIASES.get(start_tok[:3].upper())
+            end_idx = DAY_ALIASES.get(end_tok[:3].upper())
+            if start_idx is None or end_idx is None:
+                return None
+            mask |= day_range_mask(start_idx, end_idx)
+            continue
         day_index = DAY_ALIASES.get(tok[:3].upper())
         if day_index is None:
             return None
