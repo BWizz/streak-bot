@@ -133,6 +133,7 @@ async def process_reminders():
             now_minute_of_day == nudge_minute_of_day
             and reminder["last_start_date"] == today_str
             and reminder["last_nudge_date"] != today_str
+            and is_scheduled_today
         ):
             streak = db.get_streak(reminder["id"])
             if streak is None or streak["last_checkin_date"] != today_str:
@@ -150,6 +151,7 @@ async def process_reminders():
             now_minute_of_day == end_minute_of_day
             and reminder["last_start_date"] == today_str
             and reminder["last_result_date"] != today_str
+            and is_scheduled_today
         ):
             await resolve_or_reset(reminder, channel, today_str)
             db.mark_reminder_resolved(reminder["id"], today_str)
