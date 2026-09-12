@@ -60,25 +60,32 @@ async def user_already_reacted(channel, message_id, user_id):
 async def resolve_or_reset(reminder, channel, date_str):
     """Closes out a reminder window for date_str: honors a check-in that came in while the
     bot was down, and never resets a streak for a window whose check-in prompt was never
-    sent in the first place (nothing for the user to have reacted to)."""
+    sent in the first place (nothing for the user to have reacted to).
+
+    Returns True if the window was actually resolved, False if it should be retried on a
+    later tick — e.g. bot.get_channel is a cache lookup and can miss right after a reconnect,
+    which is exactly when we most need to check reactions rather than guess."""
     streak = db.get_streak(reminder["id"])
     if streak is not None and streak["last_checkin_date"] == date_str:
-        return
+        return True
 
     pending = db.get_pending_checkin_for_reminder_date(reminder["id"], date_str)
     if pending is None:
-        return
+        return True
 
-    if channel is not None and await user_already_reacted(channel, pending["message_id"], reminder["user_id"]):
+    if channel is None:
+        return False
+
+    if await user_already_reacted(channel, pending["message_id"], reminder["user_id"]):
         db.record_checkin(reminder["id"], date_str)
-        return
+        return True
 
     db.reset_streak(reminder["id"])
-    if channel is not None:
-        await channel.send(
-            f"💔 <@{reminder['user_id']}> missed the window for **{reminder['activity']}** "
-            f"({reminder['label']}) — streak reset."
-        )
+    await channel.send(
+        f"💔 <@{reminder['user_id']}> missed the window for **{reminder['activity']}** "
+        f"({reminder['label']}) — streak reset."
+    )
+    return True
 
 
 async def process_reminders():
@@ -106,8 +113,8 @@ async def process_reminders():
             and reminder["last_start_date"] != today_str
             and reminder["last_start_date"] != reminder["last_result_date"]
         ):
-            await resolve_or_reset(reminder, channel, reminder["last_start_date"])
-            db.mark_reminder_resolved(reminder["id"], reminder["last_start_date"])
+            if await resolve_or_reset(reminder, channel, reminder["last_start_date"]):
+                db.mark_reminder_resolved(reminder["id"], reminder["last_start_date"])
 
         if channel is None:
             continue
@@ -153,8 +160,8 @@ async def process_reminders():
             and reminder["last_result_date"] != today_str
             and is_scheduled_today
         ):
-            await resolve_or_reset(reminder, channel, today_str)
-            db.mark_reminder_resolved(reminder["id"], today_str)
+            if await resolve_or_reset(reminder, channel, today_str):
+                db.mark_reminder_resolved(reminder["id"], today_str)
 
 
 async def process_leaderboards():
