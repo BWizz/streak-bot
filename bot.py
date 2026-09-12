@@ -1,6 +1,7 @@
 import logging
 import os
 from datetime import datetime, timedelta, timezone as dt_timezone
+from logging.handlers import RotatingFileHandler
 from zoneinfo import ZoneInfo
 
 import discord
@@ -16,7 +17,18 @@ load_dotenv()
 TOKEN = os.environ["DISCORD_TOKEN"]
 CHECK_EMOJI = "✅"
 
-logging.basicConfig(level=logging.INFO)
+# Logs go to a size-capped rotating file rather than stdout — under nohup/start.sh, stdout
+# is appended to nohup.out forever, and this app runs unattended for weeks at a time.
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.log")
+handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3)
+handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logging.getLogger().addHandler(handler)
+logging.getLogger().setLevel(logging.INFO)
+
+# apscheduler logs "running"/"executed successfully" for scheduler_tick every 60s regardless
+# of whether anything happened — pure noise at INFO, so it gets its own higher floor.
+logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
+
 log = logging.getLogger("streakbot")
 
 intents = discord.Intents.default()

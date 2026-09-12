@@ -1,5 +1,9 @@
 .env
 streakbot.db
+streakbot.db.bak-*
 __pycache__/
 *.pyc
 venv/
+nohup.out
+boot.log
+bot.log*
